@@ -19,81 +19,93 @@ module Main (main) where
 -- Imports
 --------------------------------------------------
 import Prelude hiding (FilePath)
-
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Monad (forever)
-import Data.List (find)
+import Data.List (null)
 import Filesystem (getWorkingDirectory)
 import Filesystem.Path (FilePath)
 import System.Console.GetOpt (ArgDescr(..), ArgOrder(..), OptDescr(..), getOpt,
                               usageInfo)
 import System.Environment (getArgs)
 import System.Exit (ExitCode(..), exitSuccess)
-import System.FSNotify (withManager, watchTree)
+import System.FSNotify (withManager, watchTree, WatchManager, Action, Event,
+                        Event(..))
 import System.IO (hPutStrLn, stderr)
 import System.Process (system)
 
 -- Data Types
 --------------------------------------------------
-data Flag = Help        -- -h
-          | Timeout Int -- -t integer
-          deriving(Eq, Show)
+data Options = Options { help    :: Bool   -- -h
+                       , timeout :: Int    -- -t integer
+                       , command :: String -- ...command
+                       }
 
 -- Data
 --------------------------------------------------
-msPerMinute = 60 * 1000
+mcsPerMinute = 60 * 1000 * 1000
 
-flags :: [OptDescr Flag]
-flags = [ Option ['t'] ["timeout"] (OptArg readTimeout "timeout")
-          "Sets the timeout in minutes for the alarm (default = 10)"
-        , Option ['h'] ["help"] (NoArg Help)
-          "Print this help message."
-        ]
-  where readTimeout (Just n) = Timeout $ read n
-        readTimeout Nothing  = Timeout 10 -- default to 10 minutes
+options :: [OptDescr (Options -> Options)]
+options = [ Option ['t'] ["timeout"]
+            (ReqArg (\t o -> o { timeout = mcsPerMinute * (read t) }) "timeout")
+            "Sets the timeout in minutes for the alarm (default = 10)"
+          , Option ['h'] ["help"]
+            (NoArg (\o -> o { help = True }))
+            "Print this help message."
+          ]
 
 -- Functions
 --------------------------------------------------
-parseArgs :: [String] -> Maybe ([Flag], String)
-parseArgs args = case getOpt RequireOrder flags args of
-                   (options, command, []) ->
-                     if Help `elem` options
-                       then Nothing
-                       else Just (options, unwords command)
-                   _ -> Nothing
-
 printUsage :: IO ()
-printUsage = hPutStrLn stderr $ usageInfo header flags
+printUsage = hPutStrLn stderr $ usageInfo header options
   where header = "Usage: hdose [options] test-command"
 
-onTimeout :: IO ()
-onTimeout = putStrLn "The dojo session has ended; another pilot should enter!"
+printTimeout :: IO ()
+printTimeout =
+  putStrLn "The dojo session has ended; another pilot should enter!"
 
-getTimeout :: [Flag] -> Int
-getTimeout options = case find pred options of
-                       Just (Timeout x) -> x * msPerMinute
-                       -- any other case can't happen because timeout has
-                       -- a default
-  where pred (Timeout _) = True
-        pred _ = False
+printHeader :: FilePath -> String -> Int -> IO ()
+printHeader tDir command timeout = do
+  putStrLn $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
+  putStrLn $ "Sessions will timeout after " ++ (show timeout) ++ " microseconds"
 
 -- Thanks to http://stackoverflow.com/questions/16580941
+watchAndRun :: FilePath -> String -> WatchManager -> IO ()
 watchAndRun tDir command man = do
-  watchTree man tDir (const True) $ \fp -> do
-    exitCode <- system command
-    case exitCode of
-      ExitSuccess ->
-        putStrLn "Command exited successfully. Test suite is green!"
-      ExitFailure code ->
-        putStrLn "Command exited with a non-zero exit code. :("
-    return ()
-  return ()
+  watchTree man tDir (const True) action
+  forever $ threadDelay maxBound
+  where action = actionForCommand command
 
-main = case parseArgs ["-t", "mocha", "-w"] of
-         Nothing -> printUsage
-         Just (options, command) -> do
-           forkIO $ threadDelay timeout >> onTimeout
-           tDir <- getWorkingDirectory -- for prototyping only
-           withManager $ watchAndRun tDir command
-           return ()
-          where timeout = getTimeout options
+actionForCommand :: String -> Action
+actionForCommand command (Modified _ _) = system command >>= handleExitCode
+  where handleExitCode ExitSuccess =
+          putStrLn "Command exited successfully. Test suite is green!"
+        handleExitCode (ExitFailure code) =
+          putStrLn "Command exited with a non-zero exit code. :("
+actionForCommand _ _ = return ()
+
+setDefaults :: [Options -> Options] -> String -> Options
+setDefaults opts cmd = foldl (flip ($)) defaultOpts opts
+  where defaultOpts = Options { help    = False
+                              , timeout = 10 * mcsPerMinute
+                              , command = cmd
+                              }
+
+main :: IO ()
+main = do
+  args <- getArgs
+  case getOpt RequireOrder options args of
+    (opts, rest, []) ->
+      if (help opts') || (null $ rest)
+        then printUsage
+        else startWithOptions opts'
+      where opts' = setDefaults opts (unwords rest)
+    _ -> printUsage
+
+startWithOptions :: Options -> IO ()
+startWithOptions opts = do
+  tDir <- getWorkingDirectory -- for prototyping only
+  printHeader tDir cmd to
+  forkIO $ threadDelay to >> printTimeout
+  withManager $ watchAndRun tDir cmd
+  where to  = timeout opts
+        cmd = command opts
