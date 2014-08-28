@@ -61,26 +61,26 @@ printUsage = hPutStrLn stderr $ usageInfo header options
 
 printTimeout :: IO ()
 printTimeout =
-  putStrLn "The dojo session has ended; another pilot should enter!"
+    putStrLn "The dojo session has ended; another pilot should enter!"
 
 printHeader :: FilePath -> String -> Int -> IO ()
 printHeader tDir command timeout = do
-  putStrLn $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
-  putStrLn $ "Sessions will timeout after " ++ (show timeout) ++ " microseconds"
+    putStrLn $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
+    putStrLn $ "Sessions will timeout after " ++ (show timeout) ++ " microseconds"
 
 -- Thanks to http://stackoverflow.com/questions/16580941
 watchAndRun :: FilePath -> String -> WatchManager -> IO ()
 watchAndRun tDir command man = do
-  watchTree man tDir (const True) action
-  forever $ threadDelay maxBound
+    watchTree man tDir (const True) action
+    forever $ threadDelay maxBound
   where action = actionForCommand command
 
 actionForCommand :: String -> Action
 actionForCommand command (Modified _ _) = system command >>= handleExitCode
   where handleExitCode ExitSuccess =
-          putStrLn "Command exited successfully. Test suite is green!"
+            putStrLn "Command exited successfully. Test suite is green!"
         handleExitCode (ExitFailure code) =
-          putStrLn "Command exited with a non-zero exit code. :("
+            putStrLn "Command exited with a non-zero exit code. :("
 actionForCommand _ _ = return ()
 
 setDefaults :: [Options -> Options] -> String -> Options
@@ -92,20 +92,20 @@ setDefaults opts cmd = foldl (flip ($)) defaultOpts opts
 
 main :: IO ()
 main = do
-  args <- getArgs
-  case getOpt RequireOrder options args of
-    (opts, rest, []) ->
-      if (help opts') || (null $ rest)
-        then printUsage
-        else startWithOptions opts'
-      where opts' = setDefaults opts (unwords rest)
-    _ -> printUsage
+    args <- getArgs
+    case getOpt RequireOrder options args of
+        (opts, rest, []) ->
+            if (help opts') || (null $ rest)
+                then printUsage
+                else startWithOptions opts'
+          where opts' = setDefaults opts (unwords rest)
+        _ -> printUsage
 
 startWithOptions :: Options -> IO ()
 startWithOptions opts = do
-  tDir <- getWorkingDirectory -- for prototyping only
-  printHeader tDir cmd to
-  forkIO $ threadDelay to >> printTimeout
-  withManager $ watchAndRun tDir cmd
+    tDir <- getWorkingDirectory -- for prototyping only
+    printHeader tDir cmd to
+    forkIO $ threadDelay to >> printTimeout
+    withManager $ watchAndRun tDir cmd
   where to  = timeout opts
         cmd = command opts
