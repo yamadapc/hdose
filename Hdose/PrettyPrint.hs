@@ -33,21 +33,21 @@ setForeground :: Color -> IO ()
 setForeground fg = setSGR [ SetColor Foreground Vivid fg
                           , SetConsoleIntensity BoldIntensity ]
 
-printLog :: Show a => Color -> a -> IO ()
+printLog :: Color -> String -> IO ()
 printLog fg x = do
     setForeground fg
     ts <- timestamp
-    putStrLn $ ts ++ show x
+    putStrLn $ ts ++ x
     reset
 
-printInfo :: Show a => a -> IO ()
+printInfo :: String -> IO ()
 printInfo = printLog Blue
 
-printSuccess :: Show a => a -> IO ()
+printSuccess :: String -> IO ()
 printSuccess = printLog Green
 
-printWarn :: Show a => a -> IO ()
+printWarn :: String -> IO ()
 printWarn = printLog Yellow
 
-printError :: Show a => a -> IO ()
+printError :: String -> IO ()
 printError = printLog Red
