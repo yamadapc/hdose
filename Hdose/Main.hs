@@ -20,6 +20,7 @@ module Main (main) where
 --------------------------------------------------
 import Prelude hiding (FilePath)
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.STM
 import Control.Monad (forever)
 import Data.List (null)
 import Filesystem (getWorkingDirectory)
@@ -27,11 +28,14 @@ import Filesystem.Path (FilePath)
 import System.Console.GetOpt (ArgDescr(..), ArgOrder(..), OptDescr(..), getOpt,
                               usageInfo)
 import System.Environment (getArgs)
-import System.Exit (ExitCode(..), exitSuccess)
+import System.Exit (ExitCode(..))
 import System.FSNotify (withManager, watchTree, WatchManager, Action, Event,
                         Event(..))
 import System.IO (hPutStrLn, stderr)
-import System.Process (system)
+import System.Process (runCommand, terminateProcess, waitForProcess,
+                       ProcessHandle)
+
+import PrettyPrint
 
 -- Data Types
 --------------------------------------------------
@@ -39,6 +43,12 @@ data Options = Options { help    :: Bool   -- -h
                        , timeout :: Int    -- -t integer
                        , command :: String -- ...command
                        }
+
+data TestSuiteState = Red | Yellow | Green
+
+data DojoState = Failling
+               | Running { pHandle :: ProcessHandle }
+               | Passing
 
 -- Data
 --------------------------------------------------
@@ -59,29 +69,67 @@ printUsage :: IO ()
 printUsage = hPutStrLn stderr $ usageInfo header options
   where header = "Usage: hdose [options] test-command"
 
-printTimeout :: IO ()
-printTimeout =
-    putStrLn "The dojo session has ended; another pilot should enter!"
+printTimeout :: DojoState -> IO ()
+printTimeout (Running pHandle) =
+    waitForProcess pHandle >>
+    printTimeout'
+printTimeout _ = printTimeout'
+
+printTimeout' :: IO ()
+printTimeout' =
+  printWarn "The dojo session has ended; another pilot should enter!"
+
+printEvent :: String -> Event -> IO ()
+printEvent cmd evt =
+    case evt of
+        (Added fp _) -> printEvent' fp "added"
+        (Removed fp _) -> printEvent' fp "removed"
+        (Modified fp _) -> printEvent' fp "modified"
+  where printEvent' fp verb =
+            printInfo $ "File " ++ (show fp) ++ " was " ++ verb ++
+                        ". Running " ++ cmd ++ "...."
 
 printHeader :: FilePath -> String -> Int -> IO ()
 printHeader tDir command timeout = do
-    putStrLn $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
-    putStrLn $ "Sessions will timeout after " ++ (show timeout) ++ " microseconds"
+    printInfo $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
+    printInfo $ "Sessions will timeout after " ++ (show timeout) ++
+                " microseconds"
 
--- Thanks to http://stackoverflow.com/questions/16580941
-watchAndRun :: FilePath -> String -> WatchManager -> IO ()
-watchAndRun tDir command man = do
-    watchTree man tDir (const True) action
+watchAndRun :: FilePath -> String -> Int -> WatchManager -> IO ()
+watchAndRun tDir cmd to man = do
+    tvar <- atomically $ newTVar Passing
+
+    -- Watch the directory for changes, running the command on them
+    let action = actionForCommand tvar cmd in
+      watchTree man tDir (const True) action
+
+    -- Loop `to` microseconds and warn the user the timeout has been
+    -- reached
+    forkIO $ threadDelay to >> (atomically $ readTVar tvar) >>= printTimeout
     forever $ threadDelay maxBound
-  where action = actionForCommand command
 
-actionForCommand :: String -> Action
-actionForCommand command (Modified _ _) = system command >>= handleExitCode
-  where handleExitCode ExitSuccess =
-            putStrLn "Command exited successfully. Test suite is green!"
-        handleExitCode (ExitFailure code) =
-            putStrLn "Command exited with a non-zero exit code. :("
-actionForCommand _ _ = return ()
+actionForCommand :: TVar DojoState -> String -> Event -> IO ()
+actionForCommand tvar cmd event = do
+    state <- atomically $ readTVar tvar
+    printEvent cmd event
+    case state of
+        Running pHandle ->
+            printError "Terminating hanging process..." >>
+            terminateProcess pHandle >>
+            execute tvar cmd
+        _ -> execute tvar cmd
+  where execute tvar cmd = do
+            pHandle <- runCommand cmd
+            tvar' <- atomically $ writeTVar tvar (Running pHandle)
+            exitCode <- waitForProcess pHandle
+            case exitCode of
+                ExitSuccess -> do
+                  printSuccess "Command exited with 0. Test suite is green!"
+                  atomically $ writeTVar tvar Passing
+                ExitFailure code -> do
+                  printError $ "Command exited with " ++ show code ++ ". " ++
+                               "Test suite is red!"
+                  atomically $ writeTVar tvar Failling
 
 setDefaults :: [Options -> Options] -> String -> Options
 setDefaults opts cmd = foldl (flip ($)) defaultOpts opts
@@ -98,14 +146,13 @@ main = do
             if (help opts') || (null $ rest)
                 then printUsage
                 else startWithOptions opts'
-          where opts' = setDefaults opts (unwords rest)
+              where opts' = setDefaults opts (unwords rest)
         _ -> printUsage
 
 startWithOptions :: Options -> IO ()
 startWithOptions opts = do
     tDir <- getWorkingDirectory -- for prototyping only
     printHeader tDir cmd to
-    forkIO $ threadDelay to >> printTimeout
-    withManager $ watchAndRun tDir cmd
+    withManager $ watchAndRun tDir cmd to
   where to  = timeout opts
         cmd = command opts
