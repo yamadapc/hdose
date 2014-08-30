@@ -114,8 +114,8 @@ actionForCommand tvar cmd event = do
     printEvent cmd event
     case state of
         Running pHandle ->
-            printError "Terminating hanging process..." >>
             terminateProcess pHandle >>
+            printError "Terminated hanging process..." >>
             execute tvar cmd
         _ -> execute tvar cmd
   where execute tvar cmd = do
