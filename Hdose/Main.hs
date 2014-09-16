@@ -22,15 +22,13 @@ import Prelude hiding (FilePath)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forever)
-import Data.List (null)
 import Filesystem (getWorkingDirectory)
 import Filesystem.Path (FilePath)
 import System.Console.GetOpt (ArgDescr(..), ArgOrder(..), OptDescr(..), getOpt,
                               usageInfo)
 import System.Environment (getArgs)
 import System.Exit (ExitCode(..))
-import System.FSNotify (withManager, watchTree, WatchManager, Action, Event,
-                        Event(..))
+import System.FSNotify (withManager, watchTree, WatchManager, Event, Event(..))
 import System.IO (hPutStrLn, stderr)
 import System.Process (runCommand, terminateProcess, waitForProcess,
                        ProcessHandle)
@@ -44,21 +42,20 @@ data Options = Options { help    :: Bool   -- -h
                        , command :: String -- ...command
                        }
 
-data TestSuiteState = Red | Yellow | Green
-
 data DojoState = Failling
-               | Running { pHandle :: ProcessHandle }
+               | Running ProcessHandle
                | Passing
 
 -- Data
 --------------------------------------------------
+mcsPerMinute :: Int
 mcsPerMinute = 60 * 1000 * 1000
 
 options :: [OptDescr (Options -> Options)]
-options = [ Option ['t'] ["timeout"]
-            (ReqArg (\t o -> o { timeout = mcsPerMinute * (read t) }) "timeout")
+options = [ Option "t" ["timeout"]
+            (ReqArg (\t o -> o { timeout = mcsPerMinute * read t }) "timeout")
             "Sets the timeout in minutes for the alarm (default = 10)"
-          , Option ['h'] ["help"]
+          , Option "h" ["help"]
             (NoArg (\o -> o { help = True }))
             "Print this help message."
           ]
@@ -86,13 +83,13 @@ printEvent cmd evt =
         (Removed fp _) -> printEvent' fp "removed"
         (Modified fp _) -> printEvent' fp "modified"
   where printEvent' fp verb =
-            printInfo $ "File " ++ (show fp) ++ " was " ++ verb ++
+            printInfo $ "File " ++ show fp ++ " was " ++ verb ++
                         ". Running " ++ cmd ++ "...."
 
 printHeader :: FilePath -> String -> Int -> IO ()
-printHeader tDir command timeout = do
-    printInfo $ "Starting to watch " ++ (show tDir) ++ " to run " ++ command
-    printInfo $ "Sessions will timeout after " ++ (show timeout) ++
+printHeader tDir cmd to = do
+    printInfo $ "Starting to watch " ++ show tDir ++ " to run " ++ cmd
+    printInfo $ "Sessions will timeout after " ++ show to ++
                 " microseconds"
 
 watchAndRun :: FilePath -> String -> Int -> WatchManager -> IO ()
@@ -100,12 +97,12 @@ watchAndRun tDir cmd to man = do
     tvar <- atomically $ newTVar Passing
 
     -- Watch the directory for changes, running the command on them
-    let action = actionForCommand tvar cmd in
-      watchTree man tDir (const True) action
+    let action = actionForCommand tvar cmd
+    _ <- watchTree man tDir (const True) action
 
     -- Loop `to` microseconds and warn the user the timeout has been
     -- reached
-    forkIO $ threadDelay to >> (atomically $ readTVar tvar) >>= printTimeout
+    _ <- forkIO $ threadDelay to >> atomically (readTVar tvar) >>= printTimeout
     forever $ threadDelay maxBound
 
 actionForCommand :: TVar DojoState -> String -> Event -> IO ()
@@ -116,11 +113,11 @@ actionForCommand tvar cmd event = do
         Running pHandle ->
             terminateProcess pHandle >>
             printError "Terminated hanging process..." >>
-            execute tvar cmd
-        _ -> execute tvar cmd
-  where execute tvar cmd = do
+            execute
+        _ -> execute
+  where execute = do
             pHandle <- runCommand cmd
-            tvar' <- atomically $ writeTVar tvar (Running pHandle)
+            atomically $ writeTVar tvar (Running pHandle)
             exitCode <- waitForProcess pHandle
             case exitCode of
                 ExitSuccess -> do
@@ -143,7 +140,7 @@ main = do
     args <- getArgs
     case getOpt RequireOrder options args of
         (opts, rest, []) ->
-            if (help opts') || (null $ rest)
+            if help opts' || null rest
                 then printUsage
                 else startWithOptions opts'
               where opts' = setDefaults opts (unwords rest)
