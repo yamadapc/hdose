@@ -13,58 +13,39 @@
 --
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
+module Main
+  where
 
-module Main (main) where
-
--- Imports
---------------------------------------------------
 import Prelude hiding (FilePath)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Monad (forever)
 import Filesystem (getWorkingDirectory)
 import Filesystem.Path (FilePath)
-import System.Console.GetOpt (ArgDescr(..), ArgOrder(..), OptDescr(..), getOpt,
-                              usageInfo)
-import System.Environment (getArgs)
 import System.Exit (ExitCode(..))
 import System.FSNotify (withManager, watchTree, WatchManager, Event, Event(..))
-import System.IO (hPutStrLn, stderr)
 import System.Process (runCommand, terminateProcess, waitForProcess,
                        ProcessHandle)
 
-import PrettyPrint
+import Hdose.Logging
+import Hdose.Options
 
--- Data Types
---------------------------------------------------
-data Options = Options { help    :: Bool   -- -h
-                       , timeout :: Int    -- -t integer
-                       , command :: String -- ...command
-                       }
+-- |
+-- The main entry point
+main :: IO ()
+main = do
+    opts <- getOptions
+    tDir <- getWorkingDirectory
+
+    let to  = optionsTimeout opts
+        cmd = optionsCommand opts
+
+    printHeader tDir cmd to
+    withManager $ watchAndRun tDir cmd to
 
 data DojoState = Failling
                | Running ProcessHandle
                | Passing
-
--- Data
---------------------------------------------------
-mcsPerMinute :: Int
-mcsPerMinute = 60 * 1000 * 1000
-
-options :: [OptDescr (Options -> Options)]
-options = [ Option "t" ["timeout"]
-            (ReqArg (\t o -> o { timeout = mcsPerMinute * read t }) "timeout")
-            "Sets the timeout in minutes for the alarm (default = 10)"
-          , Option "h" ["help"]
-            (NoArg (\o -> o { help = True }))
-            "Print this help message."
-          ]
-
--- Functions
---------------------------------------------------
-printUsage :: IO ()
-printUsage = hPutStrLn stderr $ usageInfo header options
-  where header = "Usage: hdose [options] test-command"
 
 printTimeout :: DojoState -> IO ()
 printTimeout (Running pHandle) =
@@ -77,11 +58,10 @@ printTimeout' =
   printWarn "The dojo session has ended; another pilot should enter!"
 
 printEvent :: String -> Event -> IO ()
-printEvent cmd evt =
-    case evt of
-        (Added fp _) -> printEvent' fp "added"
-        (Removed fp _) -> printEvent' fp "removed"
-        (Modified fp _) -> printEvent' fp "modified"
+printEvent cmd evt = case evt of
+    (Added fp _)    -> printEvent' fp "added"
+    (Removed fp _)  -> printEvent' fp "removed"
+    (Modified fp _) -> printEvent' fp "modified"
   where printEvent' fp verb =
             printInfo $ "File " ++ show fp ++ " was " ++ verb ++
                         ". Running " ++ cmd ++ "...."
@@ -90,7 +70,7 @@ printHeader :: FilePath -> String -> Int -> IO ()
 printHeader tDir cmd to = do
     printInfo $ "Starting to watch " ++ show tDir ++ " to run " ++ cmd
     printInfo $ "Sessions will timeout after " ++ show to ++
-                " microseconds"
+                " minutes"
 
 watchAndRun :: FilePath -> String -> Int -> WatchManager -> IO ()
 watchAndRun tDir cmd to man = do
@@ -100,10 +80,16 @@ watchAndRun tDir cmd to man = do
     let action = actionForCommand tvar cmd
     _ <- watchTree man tDir (const True) action
 
-    -- Loop `to` microseconds and warn the user the timeout has been
+    -- Loop `to` minutes and warn the user the timeout has been
     -- reached
-    _ <- forkIO $ threadDelay to >> atomically (readTVar tvar) >>= printTimeout
+    _ <- forkIO $ do
+        threadDelay to'
+        st <- atomically (readTVar tvar)
+        printTimeout st
+
     forever $ threadDelay maxBound
+  where
+    to' = 60 * 1000 * 1000 * to
 
 actionForCommand :: TVar DojoState -> String -> Event -> IO ()
 actionForCommand tvar cmd event = do
@@ -128,28 +114,3 @@ actionForCommand tvar cmd event = do
                                "Test suite is red!"
                   atomically $ writeTVar tvar Failling
 
-setDefaults :: [Options -> Options] -> String -> Options
-setDefaults opts cmd = foldl (flip ($)) defaultOpts opts
-  where defaultOpts = Options { help    = False
-                              , timeout = 10 * mcsPerMinute
-                              , command = cmd
-                              }
-
-main :: IO ()
-main = do
-    args <- getArgs
-    case getOpt RequireOrder options args of
-        (opts, rest, []) ->
-            if help opts' || null rest
-                then printUsage
-                else startWithOptions opts'
-              where opts' = setDefaults opts (unwords rest)
-        _ -> printUsage
-
-startWithOptions :: Options -> IO ()
-startWithOptions opts = do
-    tDir <- getWorkingDirectory -- for prototyping only
-    printHeader tDir cmd to
-    withManager $ watchAndRun tDir cmd to
-  where to  = timeout opts
-        cmd = command opts

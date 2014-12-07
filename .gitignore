@@ -1,1 +1,4 @@
 dist
+research
+cabal.sandbox.config
+.cabal-sandbox

@@ -13,8 +13,7 @@
 --
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-module PrettyPrint (printLog, printInfo, printWarn, printSuccess, printError)
+module Hdose.Logging (printLog, printInfo, printWarn, printSuccess, printError)
   where
 
 import Data.Time (getCurrentTime, formatTime)
@@ -35,8 +34,8 @@ setForeground fg = setSGR [ SetColor Foreground Vivid fg
 
 printLog :: Color -> String -> IO ()
 printLog fg x = do
-    setForeground fg
     ts <- timestamp
+    setForeground fg
     putStrLn $ ts ++ x
     reset
 
