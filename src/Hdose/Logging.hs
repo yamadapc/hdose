@@ -13,11 +13,20 @@
 --
 -- You should have received a copy of the GNU General Public License
 -- along with this program.  If not, see <http://www.gnu.org/licenses/>.
-module Hdose.Logging (printLog, printInfo, printWarn, printSuccess, printError)
+module Hdose.Logging
+    (
+      printLog
+    , printInfo
+    , printWarn
+    , printSuccess
+    , printError
+    , printEvent
+    )
   where
 
 import Data.Time (getCurrentTime, formatTime)
 import System.Console.ANSI
+import System.FSNotify (Event(..))
 import System.Locale (defaultTimeLocale)
 
 reset :: IO ()
@@ -50,3 +59,10 @@ printWarn = printLog Yellow
 
 printError :: String -> IO ()
 printError = printLog Red
+
+printEvent :: Event -> IO ()
+printEvent evt = case evt of
+    (Added fp _)    -> printEvent' fp "added"
+    (Removed fp _)  -> printEvent' fp "removed"
+    (Modified fp _) -> printEvent' fp "modified"
+  where printEvent' fp verb = printInfo $ "File " ++ show fp ++ " was " ++ verb

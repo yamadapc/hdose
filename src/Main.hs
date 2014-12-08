@@ -17,12 +17,17 @@ module Main
   where
 
 import Prelude hiding (FilePath)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, wait)
 import Control.Concurrent.STM
-import Control.Monad (forever)
+import Control.Monad
 import Filesystem (getWorkingDirectory)
 import Filesystem.Path (FilePath)
+import Filesystem.Path.CurrentOS (encodeString)
+import qualified GHC.IO (FilePath)
 import System.Exit (ExitCode(..))
+import System.FilePath (makeRelative)
+import System.FilePath.Glob (Pattern, match)
 import System.FSNotify (withManager, watchTree, WatchManager, Event, Event(..))
 import System.Process (runCommand, terminateProcess, waitForProcess,
                        ProcessHandle)
@@ -39,62 +44,43 @@ main = do
 
     let to  = optionsTimeout opts
         cmd = optionsCommand opts
+        ign = optionsIgnore opts
 
     printHeader tDir cmd to
-    withManager $ watchAndRun tDir cmd to
+    withManager $ watchAndRun ign tDir cmd to
 
 data DojoState = Failling
                | Running ProcessHandle
                | Passing
 
-printTimeout :: DojoState -> IO ()
-printTimeout (Running pHandle) =
-    waitForProcess pHandle >>
-    printTimeout'
-printTimeout _ = printTimeout'
-
-printTimeout' :: IO ()
-printTimeout' =
-  printWarn "The dojo session has ended; another pilot should enter!"
-
-printEvent :: String -> Event -> IO ()
-printEvent cmd evt = case evt of
-    (Added fp _)    -> printEvent' fp "added"
-    (Removed fp _)  -> printEvent' fp "removed"
-    (Modified fp _) -> printEvent' fp "modified"
-  where printEvent' fp verb =
-            printInfo $ "File " ++ show fp ++ " was " ++ verb ++
-                        ". Running " ++ cmd ++ "...."
-
-printHeader :: FilePath -> String -> Int -> IO ()
-printHeader tDir cmd to = do
-    printInfo $ "Starting to watch " ++ show tDir ++ " to run " ++ cmd
-    printInfo $ "Sessions will timeout after " ++ show to ++
-                " minutes"
-
-watchAndRun :: FilePath -> String -> Int -> WatchManager -> IO ()
-watchAndRun tDir cmd to man = do
+watchAndRun :: [Pattern] -> FilePath -> String -> Int -> WatchManager -> IO ()
+watchAndRun ignore tDir cmd to man = do
     tvar <- atomically $ newTVar Passing
 
     -- Watch the directory for changes, running the command on them
-    let action = actionForCommand tvar cmd
+    let action = actionForCommand (encodeString tDir) ignore tvar cmd
     _ <- watchTree man tDir (const True) action
 
     -- Loop `to` minutes and warn the user the timeout has been
     -- reached
-    _ <- forkIO $ do
+    timeoutA <- async $ forever $ do
         threadDelay to'
         st <- atomically (readTVar tvar)
         printTimeout st
 
-    forever $ threadDelay maxBound
+    wait timeoutA
   where
     to' = 60 * 1000 * 1000 * to
 
-actionForCommand :: TVar DojoState -> String -> Event -> IO ()
-actionForCommand tvar cmd event = do
+actionForCommand :: GHC.IO.FilePath -> [Pattern] -> TVar DojoState -> String -> Event
+                 -> IO ()
+actionForCommand cwd ignore _ _ event | any (`match` fp) ignore = do
+    printWarn $ "Ignoring event on " ++ fp
+    return ()
+  where fp = eventFilePath cwd event
+actionForCommand _ _ tvar cmd event = do
     state <- atomically $ readTVar tvar
-    printEvent cmd event
+    printEvent event
     case state of
         Running pHandle ->
             terminateProcess pHandle >>
@@ -114,3 +100,26 @@ actionForCommand tvar cmd event = do
                                "Test suite is red!"
                   atomically $ writeTVar tvar Failling
 
+eventFilePath :: GHC.IO.FilePath -> Event -> GHC.IO.FilePath
+eventFilePath cwd (Added fp _)    = makeRelative cwd $ encodeString fp
+eventFilePath cwd (Removed fp _)  = makeRelative cwd $ encodeString fp
+eventFilePath cwd (Modified fp _) = makeRelative cwd $ encodeString fp
+
+-- More logging functions
+-------------------------------------------------------------------------------
+
+printTimeout :: DojoState -> IO ()
+printTimeout (Running pHandle) =
+    waitForProcess pHandle >>
+    printTimeout'
+printTimeout _ = printTimeout'
+
+printTimeout' :: IO ()
+printTimeout' =
+  printWarn "The dojo session has ended; another pilot should enter!"
+
+printHeader :: FilePath -> String -> Int -> IO ()
+printHeader tDir cmd to = do
+    printInfo $ "Starting to watch " ++ show tDir ++ " to run " ++ cmd
+    printInfo $ "Sessions will timeout after " ++ show to ++
+                " minutes"
